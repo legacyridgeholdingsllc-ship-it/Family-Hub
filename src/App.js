@@ -1,7 +1,6 @@
 // ============================================================
 //  FAMILY HUB — Complete Edition
-//  Calendar · Tasks · Lists · Meals · Family
-//  Notifications · Weather · Sleep Mode · Parental Lock
+//  Fixed: React #418 hydration error (no module-level browser APIs)
 // ============================================================
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -56,12 +55,10 @@ const REMINDER_OPTIONS=[
   {label:"None",mins:0},{label:"15 min",mins:15},{label:"30 min",mins:30},
   {label:"1 hour",mins:60},{label:"3 hours",mins:180},{label:"1 day",mins:1440},
 ];
-const WMO_ICONS={0:"☀️",1:"🌤️",2:"⛅",3:"☁️",45:"🌫️",48:"🌫️",51:"🌦️",53:"🌦️",55:"🌦️",61:"🌧️",63:"🌧️",65:"🌧️",71:"🌨️",73:"🌨️",75:"🌨️",80:"🌦️",81:"🌧️",82:"⛈️",95:"⛈️",96:"⛈️",99:"⛈️"};
+const WMO_ICONS={0:"☀️",1:"🌤️",2:"⛅",3:"☁️",45:"🌫️",48:"🌫️",51:"🌦️",53:"🌦️",55:"🌦️",
+  61:"🌧️",63:"🌧️",65:"🌧️",71:"🌨️",73:"🌨️",75:"🌨️",80:"🌦️",81:"🌧️",82:"⛈️",95:"⛈️",96:"⛈️",99:"⛈️"};
 
-const today=new Date();
-const todayStr=fmt(today.getFullYear(),today.getMonth(),today.getDate());
-const curMKey=mKey(today.getFullYear(),today.getMonth());
-
+// ── Pure helpers (no browser APIs) ───────────────────────────
 function fmt(y,m,d){return`${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;}
 function mKey(y,m){return`${y}-${String(m+1).padStart(2,"0")}`;}
 function daysIn(y,m){return new Date(y,m+1,0).getDate();}
@@ -72,17 +69,13 @@ function parseTime(t){
   const m=t.match(/(\d+):(\d+)\s*(AM|PM)/i);
   return m?{hour:m[1],minute:m[2].padStart(2,"0"),ampm:m[3].toUpperCase()}:{hour:"12",minute:"00",ampm:"PM"};
 }
-function timeToMinutes(t){
-  const [h,m]=t.split(":").map(Number); return h*60+m;
-}
-function currentMinutes(){
-  const n=new Date(); return n.getHours()*60+n.getMinutes();
-}
+function timeToMins(t){const[h,m]=t.split(":").map(Number);return h*60+m;}
+function nowMins(){const n=new Date();return n.getHours()*60+n.getMinutes();}
 
 // ── Notification helpers ─────────────────────────────────────
-function notifGranted(){return"Notification"in window&&Notification.permission==="granted";}
+function notifGranted(){return typeof Notification!=="undefined"&&Notification.permission==="granted";}
 async function requestNotifPerm(){
-  if(!("Notification"in window))return false;
+  if(typeof Notification==="undefined")return false;
   if(Notification.permission==="granted")return true;
   return(await Notification.requestPermission())==="granted";
 }
@@ -115,27 +108,21 @@ function scheduleDailyChore(timeStr){
   scheduledTimeouts["__chore__"]=setTimeout(()=>{sendNotif("📋 Chore Time!","Check your tasks for today! ⭐");scheduleDailyChore(timeStr);},fire.getTime()-now.getTime());
 }
 
-// ── Weather (Open-Meteo, no API key) ─────────────────────────
+// ── Weather ──────────────────────────────────────────────────
 const weatherCache={};
 async function fetchWeather(lat,lon,date){
   const key=`${lat.toFixed(2)},${lon.toFixed(2)},${date}`;
   if(weatherCache[key])return weatherCache[key];
   try{
     const url=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=weathercode,temperature_2m_max,temperature_2m_min&temperature_unit=fahrenheit&timezone=auto&start_date=${date}&end_date=${date}`;
-    const r=await fetch(url);
-    const data=await r.json();
-    const result={
-      code:data.daily.weathercode[0],
-      max:Math.round(data.daily.temperature_2m_max[0]),
-      min:Math.round(data.daily.temperature_2m_min[0]),
-    };
-    weatherCache[key]=result;
-    return result;
+    const r=await fetch(url);const data=await r.json();
+    const result={code:data.daily.weathercode[0],max:Math.round(data.daily.temperature_2m_max[0]),min:Math.round(data.daily.temperature_2m_min[0])};
+    weatherCache[key]=result;return result;
   }catch(e){return null;}
 }
-async function geocode(locationStr){
+async function geocode(loc){
   try{
-    const r=await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(locationStr)}&format=json&limit=1`);
+    const r=await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(loc)}&format=json&limit=1`);
     const d=await r.json();
     if(d.length)return{lat:parseFloat(d[0].lat),lon:parseFloat(d[0].lon)};
   }catch(e){}
@@ -203,15 +190,13 @@ function TimePicker({value,onChange}){
   );
 }
 
-// ── Weather badge component ───────────────────────────────────
 function WeatherBadge({date,location,userCoords}){
   const[weather,setWeather]=useState(null);
   useEffect(()=>{
-    if(!date)return;
-    const today2=new Date();
+    if(!date||!userCoords&&!location)return;
     const evDate=new Date(date+"T00:00:00");
-    const diffDays=Math.round((evDate-today2)/(1000*60*60*24));
-    if(diffDays<0||diffDays>14)return; // only forecast up to 14 days
+    const diffDays=Math.round((evDate-new Date())/(1000*60*60*24));
+    if(diffDays<0||diffDays>14)return;
     async function load(){
       let coords=userCoords;
       if(location){const gc=await geocode(location);if(gc)coords=gc;}
@@ -222,46 +207,37 @@ function WeatherBadge({date,location,userCoords}){
     load();
   },[date,location,userCoords]);
   if(!weather)return null;
-  const icon=WMO_ICONS[weather.code]||"🌡️";
   return(
     <span style={{display:"inline-flex",alignItems:"center",gap:3,background:"#EFF6FF",borderRadius:10,padding:"2px 8px",fontSize:11,fontWeight:800,color:"#1D4ED8",marginLeft:4}}>
-      {icon} {weather.max}°/{weather.min}°F
+      {WMO_ICONS[weather.code]||"🌡️"} {weather.max}°/{weather.min}°F
     </span>
   );
 }
 
-// ── Sleep Screen ─────────────────────────────────────────────
 function SleepScreen({onWake,pin}){
-  const[clock,setClock]=useState(new Date());
-  const[showPinEntry,setShowPinEntry]=useState(false);
+  const[clock,setClock]=useState(()=>new Date());
+  const[showPin,setShowPin]=useState(false);
   const[pinInput,setPinInput]=useState("");
   const[pinError,setPinError]=useState(false);
   useEffect(()=>{const t=setInterval(()=>setClock(new Date()),1000);return()=>clearInterval(t);},[]);
   const h=clock.getHours();const m=clock.getMinutes();
-  const ampm=h>=12?"PM":"AM";
-  const h12=h%12||12;
-  const timeStr=`${h12}:${String(m).padStart(2,"0")} ${ampm}`;
+  const ap=h>=12?"PM":"AM";const h12=h%12||12;
+  const timeStr=`${h12}:${String(m).padStart(2,"0")} ${ap}`;
   const dateStr=`${DAYS[clock.getDay()]}, ${MONTHS[clock.getMonth()]} ${clock.getDate()}`;
-  function tryPin(p){
-    if(p===pin){onWake();}
-    else{setPinError(true);setPinInput("");setTimeout(()=>setPinError(false),1200);}
-  }
   function pressDigit(d){
-    const next=pinInput+d;
-    setPinInput(next);
-    if(next.length===4)tryPin(next);
+    const next=pinInput+d;setPinInput(next);
+    if(next.length===4){
+      if(next===pin){onWake();}
+      else{setPinError(true);setPinInput("");setTimeout(()=>setPinError(false),1200);}
+    }
   }
   return(
     <div style={{position:"fixed",inset:0,background:"linear-gradient(180deg,#0F0C29,#302B63,#24243e)",zIndex:9000,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"white"}}>
-      <div style={{fontSize:16,fontWeight:700,color:"rgba(255,255,255,.6)",marginBottom:8,letterSpacing:2}}>{dateStr.toUpperCase()}</div>
-      <div style={{fontFamily:"'Fredoka One',cursive",fontSize:88,lineHeight:1,marginBottom:4,textShadow:"0 0 40px rgba(255,255,255,.3)"}}>{timeStr}</div>
+      <div style={{fontSize:15,fontWeight:700,color:"rgba(255,255,255,.6)",marginBottom:8,letterSpacing:2}}>{dateStr.toUpperCase()}</div>
+      <div style={{fontFamily:"'Fredoka One',cursive",fontSize:80,lineHeight:1,marginBottom:4,textShadow:"0 0 40px rgba(255,255,255,.3)"}}>{timeStr}</div>
       <div style={{fontSize:22,marginBottom:48,color:"rgba(255,255,255,.7)"}}>Good Night 🌙</div>
-      <div style={{display:"flex",gap:8,opacity:.5,marginBottom:32}}>
-        {[..."✦✦✦✦✦"].map((s,i)=><span key={i} style={{fontSize:8}}>{s}</span>)}
-      </div>
-      {!showPinEntry?(
-        <button onClick={()=>setShowPinEntry(true)}
-          style={{background:"rgba(255,255,255,.15)",border:"2px solid rgba(255,255,255,.3)",borderRadius:20,padding:"10px 24px",color:"white",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Nunito',sans-serif",backdropFilter:"blur(4px)"}}>
+      {!showPin?(
+        <button onClick={()=>setShowPin(true)} style={{background:"rgba(255,255,255,.15)",border:"2px solid rgba(255,255,255,.3)",borderRadius:20,padding:"10px 24px",color:"white",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Nunito',sans-serif"}}>
           🔓 Parent Override
         </button>
       ):(
@@ -281,14 +257,13 @@ function SleepScreen({onWake,pin}){
               </button>
             ))}
           </div>
-          <button onClick={()=>{setShowPinEntry(false);setPinInput("");}} style={{marginTop:12,background:"none",border:"none",color:"rgba(255,255,255,.5)",fontSize:12,cursor:"pointer",fontFamily:"'Nunito',sans-serif"}}>Cancel</button>
+          <button onClick={()=>{setShowPin(false);setPinInput("");}} style={{marginTop:12,background:"none",border:"none",color:"rgba(255,255,255,.5)",fontSize:12,cursor:"pointer",fontFamily:"'Nunito',sans-serif"}}>Cancel</button>
         </div>
       )}
     </div>
   );
 }
 
-// ── PIN Entry modal (parental lock) ──────────────────────────
 function PinModal({title,onSuccess,onCancel,pin,isSetup=false}){
   const[input,setInput]=useState("");
   const[confirm,setConfirm]=useState("");
@@ -301,10 +276,10 @@ function PinModal({title,onSuccess,onCancel,pin,isSetup=false}){
         if(next===pin){onSuccess();}
         else{setError("Incorrect PIN");setInput("");setTimeout(()=>setError(""),1200);}
       }
-    } else if(step==="set"){
+    }else if(step==="set"){
       const next=input+d;setInput(next);
       if(next.length===4)setStep("confirm");
-    } else {
+    }else{
       const next=confirm+d;setConfirm(next);
       if(next.length===4){
         if(next===input){onSuccess(input);}
@@ -339,7 +314,6 @@ function PinModal({title,onSuccess,onCancel,pin,isSetup=false}){
   );
 }
 
-// ── Event Form ───────────────────────────────────────────────
 function EventForm({initial,members,onSave,onCancel,title,userCoords}){
   const[ev,setEv]=useState(initial);
   function toggleDay(dow){const days=ev.repeatDays||[];setEv(p=>({...p,repeatDays:days.includes(dow)?days.filter(d=>d!==dow):[...days,dow]}));}
@@ -361,7 +335,7 @@ function EventForm({initial,members,onSave,onCancel,title,userCoords}){
       <input value={ev.location||""} onChange={e=>setEv(p=>({...p,location:e.target.value}))} placeholder="Leave blank to use current location…" style={{...S.inp,marginBottom:14,display:"block"}}/>
       {ev.date&&(
         <div style={{background:"#EFF6FF",borderRadius:12,padding:"8px 12px",marginBottom:14,fontSize:13,fontWeight:700,color:"#1D4ED8",display:"flex",alignItems:"center",gap:8}}>
-          Forecast preview: <WeatherBadge date={ev.date} location={ev.location} userCoords={userCoords}/>
+          Forecast: <WeatherBadge date={ev.date} location={ev.location} userCoords={userCoords}/>
           {!ev.location&&userCoords&&<span style={{fontSize:11,color:"#60A5FA"}}>Using your location</span>}
         </div>
       )}
@@ -396,10 +370,7 @@ function EventForm({initial,members,onSave,onCancel,title,userCoords}){
       )}
       {ev.repeat&&ev.repeat!=="none"&&(
         <div style={{background:"#ECFDF5",borderRadius:10,padding:"8px 12px",marginBottom:14,fontSize:12,color:"#2D6A4F",fontWeight:700}}>
-          🔁 {ev.repeat==="weekly"&&"Repeats every week on the same day"}
-          {ev.repeat==="monthly"&&"Repeats on the same date each month"}
-          {ev.repeat==="yearly"&&"Repeats every year on this date"}
-          {ev.repeat==="daily"&&((ev.repeatDays||[]).length===0?"Repeats every day":`Repeats every ${(ev.repeatDays||[]).sort().map(i=>WEEK_DAYS[i]).join(", ")}`)}
+          🔁 {ev.repeat==="weekly"?"Repeats every week on the same day":ev.repeat==="monthly"?"Repeats on the same date each month":ev.repeat==="yearly"?"Repeats every year on this date":ev.repeat==="daily"&&(ev.repeatDays||[]).length===0?"Repeats every day":`Repeats every ${(ev.repeatDays||[]).sort().map(i=>WEEK_DAYS[i]).join(", ")}`}
         </div>
       )}
       <div style={{display:"flex",gap:8}}>
@@ -413,46 +384,59 @@ function EventForm({initial,members,onSave,onCancel,title,userCoords}){
 const LBL={fontSize:11,fontWeight:800,color:"#888",display:"block",marginBottom:6};
 
 // ════════════════════════════════════════════════════════════
-//  MAIN APP
-// ════════════════════════════════════════════════════════════
 export default function FamilyHub(){
+  // ── Date/time state (set client-side only to avoid hydration mismatch) ──
+  const[now,setNow]=useState(null); // null until mounted
+  const today    = now || new Date(0);
+  const todayStr = now ? fmt(now.getFullYear(),now.getMonth(),now.getDate()) : "";
+  const curMKey  = now ? mKey(now.getFullYear(),now.getMonth()) : "";
+
+  // Mount: initialise all browser-dependent state
+  useEffect(()=>{
+    setNow(new Date());
+    // Notification status
+    if(typeof Notification==="undefined"){setNotifStatus("unsupported");return;}
+    const perm=Notification.permission;
+    if(perm==="granted")setNotifStatus("granted");
+    else if(perm==="denied")setNotifStatus("denied");
+    else{setNotifStatus("unknown");setShowNotifBanner(true);}
+    // localStorage
+    const sc=localStorage.getItem("choreTime");   if(sc){setChoreTime(sc);setChoreTimeInput(sc);}
+    const ss=localStorage.getItem("sleepStart");  if(ss){setSleepStart(ss);setSleepStartInput(ss);}
+    const se=localStorage.getItem("sleepEnd");    if(se){setSleepEnd(se);setSleepEndInput(se);}
+    const sp=localStorage.getItem("parentPin");   if(sp)setParentPin(sp);
+    const sl=localStorage.getItem("locked");      if(sl==="true")setLocked(true);
+    // Geolocation
+    if(navigator.geolocation){
+      navigator.geolocation.getCurrentPosition(pos=>setUserCoords({lat:pos.coords.latitude,lon:pos.coords.longitude}),()=>{},{timeout:5000});
+    }
+  },[]);
+
   const[fbReady,setFbReady]=useState(false);
   const[fbStatus,setFbStatus]=useState("connecting");
-
-  // Data
   const[members,setMembers]=useState(DEFAULT_MEMBERS);
   const[events,setEvents]=useState([]);
   const[tasks,setTasks]=useState([]);
   const[listItems,setListItems]=useState([]);
   const[meals,setMeals]=useState({});
   const[monthNotes,setMonthNotes]=useState({});
-
-  // Notifications
   const[notifStatus,setNotifStatus]=useState("unknown");
   const[showNotifBanner,setShowNotifBanner]=useState(false);
   const[choreTime,setChoreTime]=useState("07:30");
   const[choreTimeInput,setChoreTimeInput]=useState("07:30");
-
-  // Weather
   const[userCoords,setUserCoords]=useState(null);
-
-  // Sleep mode
   const[sleepMode,setSleepMode]=useState(false);
   const[sleepStart,setSleepStart]=useState("21:00");
   const[sleepEnd,setSleepEnd]=useState("07:00");
   const[sleepStartInput,setSleepStartInput]=useState("21:00");
   const[sleepEndInput,setSleepEndInput]=useState("07:00");
-
-  // Parental lock
   const[locked,setLocked]=useState(false);
-  const[parentPin,setParentPin]=useState(""); // empty = not set
+  const[parentPin,setParentPin]=useState("");
   const[showPinModal,setShowPinModal]=useState(false);
-  const[pinModalMode,setPinModalMode]=useState("unlock"); // unlock|setup|change
-
-  // UI
+  const[pinModalMode,setPinModalMode]=useState("unlock");
   const[activeTab,setActiveTab]=useState("calendar");
-  const[calYear,setCalYear]=useState(today.getFullYear());
-  const[calMonth,setCalMonth]=useState(today.getMonth());
+  const[calYear,setCalYear]=useState(()=>new Date().getFullYear());
+  const[calMonth,setCalMonth]=useState(()=>new Date().getMonth());
   const[showDayModal,setShowDayModal]=useState(false);
   const[showMealModal,setShowMealModal]=useState(false);
   const[showTaskModal,setShowTaskModal]=useState(false);
@@ -472,7 +456,7 @@ export default function FamilyHub(){
 
   const blankEvent=useCallback(()=>({title:"",memberId:"",time:"12:00 PM",repeat:"none",repeatDays:[],reminderMins:0,location:""}),[]);
 
-  // ── Firebase ──
+  // Firebase init
   useEffect(()=>{
     let unsubs=[];
     loadFirebase().then(ok=>{
@@ -489,50 +473,24 @@ export default function FamilyHub(){
     return()=>unsubs.forEach(u=>u());
   },[]);
 
-  // ── Load saved settings ──
-  useEffect(()=>{
-    const savedChore=localStorage.getItem("choreTime");if(savedChore){setChoreTime(savedChore);setChoreTimeInput(savedChore);}
-    const savedSleepStart=localStorage.getItem("sleepStart");if(savedSleepStart){setSleepStart(savedSleepStart);setSleepStartInput(savedSleepStart);}
-    const savedSleepEnd=localStorage.getItem("sleepEnd");if(savedSleepEnd){setSleepEnd(savedSleepEnd);setSleepEndInput(savedSleepEnd);}
-    const savedPin=localStorage.getItem("parentPin");if(savedPin)setParentPin(savedPin);
-    const savedLocked=localStorage.getItem("locked");if(savedLocked==="true")setLocked(true);
-    if(!("Notification"in window)){setNotifStatus("unsupported");return;}
-    const perm=Notification.permission;
-    if(perm==="granted"){setNotifStatus("granted");}
-    else if(perm==="denied"){setNotifStatus("denied");}
-    else{setNotifStatus("unknown");setShowNotifBanner(true);}
-  },[]);
-
-  // ── Geolocation ──
-  useEffect(()=>{
-    if(navigator.geolocation){
-      navigator.geolocation.getCurrentPosition(pos=>{setUserCoords({lat:pos.coords.latitude,lon:pos.coords.longitude});},{},{ timeout:5000});
-    }
-  },[]);
-
-  // ── Schedule reminders ──
+  // Schedule reminders when events load
   useEffect(()=>{if(notifStatus==="granted")events.forEach(ev=>{if(ev.reminderMins>0)scheduleEventReminder(ev,ev.reminderMins);});},[events,notifStatus]);
   useEffect(()=>{if(notifStatus==="granted"&&choreTime){scheduleDailyChore(choreTime);localStorage.setItem("choreTime",choreTime);}},[choreTime,notifStatus]);
+  useEffect(()=>{localStorage.setItem("locked",locked);},[locked]);
 
-  // ── Sleep mode checker ──
+  // Sleep mode checker - only after mount
   useEffect(()=>{
+    if(!now)return;
     function checkSleep(){
-      const now=currentMinutes();
-      const start=timeToMinutes(sleepStart);
-      const end=timeToMinutes(sleepEnd);
-      let shouldSleep=false;
-      if(start>end){shouldSleep=now>=start||now<end;}// overnight e.g. 21:00 - 07:00
-      else{shouldSleep=now>=start&&now<end;}
-      if(shouldSleep&&!locked)setSleepMode(true);
-      else if(!shouldSleep)setSleepMode(false);
+      const cur=nowMins();const start=timeToMins(sleepStart);const end=timeToMins(sleepEnd);
+      const shouldSleep=start>end?(cur>=start||cur<end):(cur>=start&&cur<end);
+      if(shouldSleep)setSleepMode(true);
+      else setSleepMode(false);
     }
     checkSleep();
-    const t=setInterval(checkSleep,30000);// check every 30s
+    const t=setInterval(checkSleep,30000);
     return()=>clearInterval(t);
-  },[sleepStart,sleepEnd]);
-
-  // ── Parental lock persistence ──
-  useEffect(()=>{localStorage.setItem("locked",locked);},[locked]);
+  },[sleepStart,sleepEnd,now]);
 
   async function enableNotifications(){
     const granted=await requestNotifPerm();
@@ -545,8 +503,8 @@ export default function FamilyHub(){
   const getMember=id=>members.find(m=>m.id===id);
 
   const viewMKey=mKey(calYear,calMonth);
-  const isPast=viewMKey<curMKey;
-  const isFuture=viewMKey>curMKey;
+  const isPast=now?viewMKey<curMKey:false;
+  const isFuture=now?viewMKey>curMKey:false;
   const dCount=daysIn(calYear,calMonth);
   const fDay=fd(calYear,calMonth);
 
@@ -556,17 +514,6 @@ export default function FamilyHub(){
   const expandedEvents=expandEvents(events,calYear,calMonth);
   function eventsFor(d){return expandedEvents.filter(e=>e.date===d).sort((a,b)=>(a.time||"").localeCompare(b.time||""));}
 
-  // ── Locked guard ──
-  function guardedAction(fn){
-    if(locked){
-      setPinModalMode("unlock");
-      setShowPinModal(true);
-      return;
-    }
-    fn();
-  }
-
-  // ── Events ──
   function openDayModal(ds){setSelectedDate(ds);setShowDayModal(true);}
   function openNewEventForm(ds){setSelectedDate(ds);setEditingEvent({...blankEvent(),date:ds});setShowEventForm(true);setShowDayModal(false);}
   function openEditEventForm(ev){setEditingEvent({...ev,repeat:ev.repeat||"none",repeatDays:ev.repeatDays||[],reminderMins:ev.reminderMins||0,location:ev.location||""});setShowEventForm(true);setShowDayModal(false);}
@@ -588,7 +535,6 @@ export default function FamilyHub(){
     else setEvents(p=>p.filter(e=>e.id!==id));
   }
 
-  // ── Tasks ──
   async function addTask(){
     if(!newTask.text)return;
     const id=`tk_${Date.now()}`;
@@ -600,39 +546,51 @@ export default function FamilyHub(){
   async function toggleTask(id){const t=tasks.find(x=>x.id===id);if(!t)return;if(fbReady)await fsUpd("tasks",id,{done:!t.done});else setTasks(p=>p.map(x=>x.id===id?{...x,done:!x.done}:x));}
   async function deleteTask(id){if(fbReady)await fsDel("tasks",id);else setTasks(p=>p.filter(t=>t.id!==id));}
 
-  // ── Lists ──
-  async function addListItem(type){if(!newListItem[type])return;const id=`li_${Date.now()}`;const item={id,text:newListItem[type],type,done:false};if(fbReady)await fsSet("listItems",id,item);else setListItems(p=>[...p,item]);setNewListItem(p=>({...p,[type]:""}));}
+  async function addListItem(type){
+    if(!newListItem[type])return;
+    const id=`li_${Date.now()}`;
+    const item={id,text:newListItem[type],type,done:false};
+    if(fbReady)await fsSet("listItems",id,item);else setListItems(p=>[...p,item]);
+    setNewListItem(p=>({...p,[type]:""}));
+  }
   async function toggleListItem(id){const item=listItems.find(i=>i.id===id);if(!item)return;if(fbReady)await fsUpd("listItems",id,{done:!item.done});else setListItems(p=>p.map(i=>i.id===id?{...i,done:!i.done}:i));}
   async function deleteListItem(id){if(fbReady)await fsDel("listItems",id);else setListItems(p=>p.filter(i=>i.id!==id));}
 
-  // ── Meals ──
   function openMealModal(ds){setSelMealDate(ds);setMealInput(meals[ds]||{});setShowMealModal(true);}
-  async function saveMeals(){if(!selMealDate)return;const data={id:selMealDate,...mealInput};if(fbReady){await fsSet("meals",selMealDate,data);flash("Meals saved ☁️");}else setMeals(p=>({...p,[selMealDate]:data}));setShowMealModal(false);}
+  async function saveMeals(){
+    if(!selMealDate)return;
+    const data={id:selMealDate,...mealInput};
+    if(fbReady){await fsSet("meals",selMealDate,data);flash("Meals saved ☁️");}
+    else setMeals(p=>({...p,[selMealDate]:data}));
+    setShowMealModal(false);
+  }
 
-  // ── Month notes ──
   function openMonthPlanner(){setMonthInput(monthNotes[viewMKey]?.text||"");setShowMonthPlanner(true);}
-  async function saveMonthNote(){const data={id:viewMKey,text:monthInput};if(fbReady){await fsSet("monthNotes",viewMKey,data);flash("Notes saved ☁️");}else setMonthNotes(p=>({...p,[viewMKey]:data}));setShowMonthPlanner(false);}
+  async function saveMonthNote(){
+    const data={id:viewMKey,text:monthInput};
+    if(fbReady){await fsSet("monthNotes",viewMKey,data);flash("Notes saved ☁️");}
+    else setMonthNotes(p=>({...p,[viewMKey]:data}));
+    setShowMonthPlanner(false);
+  }
 
-  // ── Members ──
-  async function saveMember(){if(!editingMember)return;if(fbReady){await fsSet("members",editingMember.id,editingMember);flash("Member updated ☁️");}else setMembers(p=>p.map(m=>m.id===editingMember.id?{...editingMember}:m));setEditingMember(null);}
+  async function saveMember(){
+    if(!editingMember)return;
+    if(fbReady){await fsSet("members",editingMember.id,editingMember);flash("Member updated ☁️");}
+    else setMembers(p=>p.map(m=>m.id===editingMember.id?{...editingMember}:m));
+    setEditingMember(null);
+  }
 
-  // ── Save sleep settings ──
   function saveSleepSettings(){
     setSleepStart(sleepStartInput);setSleepEnd(sleepEndInput);
     localStorage.setItem("sleepStart",sleepStartInput);localStorage.setItem("sleepEnd",sleepEndInput);
-    flash("Sleep settings saved ☁️");
+    flash("Sleep settings saved!");
   }
 
-  // ── PIN modal handlers ──
   function handlePinSuccess(newPin){
     if(pinModalMode==="unlock"){setLocked(false);setShowPinModal(false);flash("Unlocked 🔓");}
-    else if(pinModalMode==="setup"||pinModalMode==="change"){
-      setParentPin(newPin);localStorage.setItem("parentPin",newPin);
-      setLocked(true);setShowPinModal(false);flash("Parental lock enabled 🔒");
-    }
+    else{setParentPin(newPin);localStorage.setItem("parentPin",newPin);setLocked(true);setShowPinModal(false);flash("Lock enabled 🔒");}
   }
 
-  // ── Derived ──
   const starMap={};tasks.filter(t=>t.done&&t.memberId).forEach(t=>{starMap[t.memberId]=(starMap[t.memberId]||0)+(t.stars||1);});
   const filteredTasks=filterMember?tasks.filter(t=>t.memberId===filterMember):tasks;
   const activeItems=(activeList==="grocery"?listItems.filter(i=>i.type==="grocery"):listItems.filter(i=>i.type==="todo"));
@@ -643,7 +601,9 @@ export default function FamilyHub(){
 
   const tabs=[{id:"calendar",label:"Calendar",icon:"📅"},{id:"tasks",label:"Tasks",icon:"✅"},{id:"lists",label:"Lists",icon:"📝"},{id:"meals",label:"Meals",icon:"🍽️"},{id:"family",label:"Family",icon:"👨‍👩‍👧‍👦"}];
 
-  // ── Render ──────────────────────────────────────────────────
+  // Don't render until client-side mounted (prevents hydration mismatch)
+  if(!now)return <div style={{minHeight:"100vh",background:"#FFF8F0",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{fontFamily:"'Fredoka One',cursive",fontSize:28,color:"#FF6B35"}}>🏠 Family Hub</div></div>;
+
   return(
     <div style={{fontFamily:"'Nunito',sans-serif",minHeight:"100vh",background:"#FFF8F0"}}>
       <style>{`
@@ -663,24 +623,12 @@ export default function FamilyHub(){
         .eopt{font-size:21px;cursor:pointer;padding:5px;border-radius:8px;border:2px solid transparent;background:transparent;}.eopt:hover{background:#FFE8D6;}
         .xb{background:none;border:none;cursor:pointer;color:#DDD;font-size:14px;padding:4px 6px;border-radius:6px;}.xb:hover{color:#E63946;background:#FFF0F0;}
         .eb{background:none;border:none;cursor:pointer;color:#AAA;font-size:13px;padding:4px 6px;border-radius:6px;font-family:'Nunito',sans-serif;font-weight:700;}.eb:hover{color:#FF6B35;background:#FFF3E8;}
-        .lock-pulse{animation:lp 2s infinite;}@keyframes lp{0%,100%{opacity:1}50%{opacity:.5}}
+        .lock-pulse{animation:lp 2s infinite;}@keyframes lp{0%,100%{opacity:1}50%{opacity:.4}}
       `}</style>
 
-      {/* ── Sleep Screen ── */}
       {sleepMode&&<SleepScreen pin={parentPin} onWake={()=>setSleepMode(false)}/>}
+      {showPinModal&&<PinModal title={pinModalMode==="unlock"?"🔓 Unlock App":pinModalMode==="setup"?"🔒 Set Parental PIN":"🔒 Change PIN"} pin={parentPin} isSetup={pinModalMode==="setup"||pinModalMode==="change"} onSuccess={handlePinSuccess} onCancel={()=>setShowPinModal(false)}/>}
 
-      {/* ── PIN Modal ── */}
-      {showPinModal&&(
-        <PinModal
-          title={pinModalMode==="unlock"?"🔓 Unlock App":pinModalMode==="setup"?"🔒 Set Parental PIN":"🔒 Change PIN"}
-          pin={parentPin}
-          isSetup={pinModalMode==="setup"||pinModalMode==="change"}
-          onSuccess={handlePinSuccess}
-          onCancel={()=>setShowPinModal(false)}
-        />
-      )}
-
-      {/* ── Notification banner ── */}
       {showNotifBanner&&(
         <div style={{background:"#FFF3CD",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
           <div style={{fontSize:13,fontWeight:700,color:"#856404"}}>🔔 Enable notifications for reminders</div>
@@ -690,13 +638,11 @@ export default function FamilyHub(){
           </div>
         </div>
       )}
-
       {fbStatus==="connecting"&&<div style={{background:"#FFF3CD",padding:"8px 16px",fontSize:13,fontWeight:700,color:"#856404",textAlign:"center"}}>⏳ Connecting…</div>}
       {fbStatus==="demo"&&<div style={{background:"#FFF3CD",padding:"8px 16px",fontSize:13,fontWeight:700,color:"#856404",textAlign:"center"}}>⚠️ Demo mode</div>}
-
       {toast&&<div style={{position:"fixed",bottom:80,left:"50%",transform:"translateX(-50%)",background:"#2D6A4F",color:"white",padding:"10px 22px",borderRadius:30,fontWeight:800,fontSize:13,zIndex:9999,boxShadow:"0 4px 20px rgba(0,0,0,.2)",whiteSpace:"nowrap"}}>{toast}</div>}
 
-      {/* ── Header ── */}
+      {/* Header */}
       <div style={{background:"linear-gradient(135deg,#FF6B35,#FF8C42,#FFB347)",padding:"18px 16px 14px",boxShadow:"0 4px 20px rgba(255,107,53,.3)"}}>
         <div style={{maxWidth:600,margin:"0 auto"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
@@ -705,7 +651,6 @@ export default function FamilyHub(){
               <h1 style={{fontFamily:"'Fredoka One',cursive",fontSize:26,color:"white"}}>Family Hub</h1>
             </div>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
-              {/* Lock/Unlock button */}
               {parentPin&&(
                 <button onClick={()=>{if(locked){setPinModalMode("unlock");setShowPinModal(true);}else{setLocked(true);flash("App locked 🔒");}}}
                   style={{background:"rgba(255,255,255,.25)",border:"none",borderRadius:10,padding:"6px 10px",cursor:"pointer",fontSize:16,color:"white"}}>
@@ -725,15 +670,13 @@ export default function FamilyHub(){
           <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
             {members.map(m=>(
               <div key={m.id} style={{background:"rgba(255,255,255,.25)",borderRadius:20,padding:"3px 9px",fontSize:11,color:"white",fontWeight:700,display:"flex",alignItems:"center",gap:4}}>
-                <span style={{width:7,height:7,borderRadius:"50%",background:m.color,display:"inline-block"}}/>
-                {m.emoji} {m.name}
+                <span style={{width:7,height:7,borderRadius:"50%",background:m.color,display:"inline-block"}}/>{m.emoji} {m.name}
               </div>
             ))}
           </div>
         </div>
       </div>
 
-      {/* Locked banner */}
       {locked&&(
         <div style={{background:"#FEF2F2",padding:"8px 16px",textAlign:"center",fontSize:13,fontWeight:800,color:"#EF4444",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
           🔒 App is locked — viewing only.
@@ -741,7 +684,7 @@ export default function FamilyHub(){
         </div>
       )}
 
-      {/* ── Tabs ── */}
+      {/* Tabs */}
       <div style={{background:"white",boxShadow:"0 2px 10px rgba(0,0,0,.08)",position:"sticky",top:0,zIndex:100}}>
         <div style={{maxWidth:600,margin:"0 auto",display:"flex"}}>
           {tabs.map(t=>(
@@ -753,7 +696,6 @@ export default function FamilyHub(){
         </div>
       </div>
 
-      {/* ── Content ── */}
       <div style={{maxWidth:600,margin:"0 auto",padding:"16px 12px 100px"}}>
 
         {/* ══ CALENDAR ══ */}
@@ -807,9 +749,7 @@ export default function FamilyHub(){
                   <div key={`${ev.id}_${ei}`} className="hl" style={{background:"white",borderRadius:14,padding:"11px 14px",marginBottom:7,display:"flex",alignItems:"center",gap:10,boxShadow:"0 2px 8px rgba(0,0,0,.06)",borderLeft:`4px solid ${mem?mem.color:"#CCC"}`}}>
                     <div style={{fontSize:20}}>{mem?mem.emoji:"📅"}</div>
                     <div style={{flex:1}}>
-                      <div style={{fontWeight:800,fontSize:14,display:"flex",alignItems:"center",flexWrap:"wrap",gap:2}}>
-                        {ev.title}{repeatBadge(ev)}{reminderBadge(ev)}
-                      </div>
+                      <div style={{fontWeight:800,fontSize:14,display:"flex",alignItems:"center",flexWrap:"wrap",gap:2}}>{ev.title}{repeatBadge(ev)}{reminderBadge(ev)}</div>
                       <div style={{fontSize:12,color:"#888",fontWeight:600,display:"flex",alignItems:"center",flexWrap:"wrap",gap:4}}>
                         {ev.date}{ev.time?` · ${ev.time}`:""}{mem?` · ${mem.name}`:""}
                         <WeatherBadge date={ev.date} location={ev.location} userCoords={userCoords}/>
@@ -847,7 +787,7 @@ export default function FamilyHub(){
             {filteredTasks.map(t=>{
               const mem=t.memberId?getMember(t.memberId):null;
               return(
-                <div key={t.id} className="hl" style={{background:"white",borderRadius:16,padding:"13px 15px",marginBottom:8,display:"flex",alignItems:"center",gap:12,boxShadow:"0 2px 8px rgba(0,0,0,.06)",opacity:t.done?.6:1}}>
+                <div key={t.id} className="hl" style={{background:"white",borderRadius:16,padding:"13px 15px",marginBottom:8,display:"flex",alignItems:"center",gap:12,boxShadow:"0 2px 8px rgba(0,0,0,.06)",opacity:t.done?0.6:1}}>
                   <button onClick={()=>toggleTask(t.id)} style={{width:28,height:28,borderRadius:"50%",border:`3px solid ${mem?mem.color:"#CCC"}`,background:t.done?(mem?mem.color:"#CCC"):"transparent",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
                     {t.done&&<span style={{color:"white",fontSize:13}}>✓</span>}
                   </button>
@@ -927,18 +867,16 @@ export default function FamilyHub(){
             </div>
             {members.map(m=>(
               <div key={m.id} className="mr" onClick={()=>{if(!locked)setEditingMember({...m});}}
-                style={{background:"white",borderRadius:18,padding:"15px 16px",marginBottom:10,display:"flex",alignItems:"center",gap:14,boxShadow:"0 2px 10px rgba(0,0,0,.07)",borderLeft:`5px solid ${m.color}`,opacity:locked?.7:1}}>
+                style={{background:"white",borderRadius:18,padding:"15px 16px",marginBottom:10,display:"flex",alignItems:"center",gap:14,boxShadow:"0 2px 10px rgba(0,0,0,.07)",borderLeft:`5px solid ${m.color}`,opacity:locked?0.7:1}}>
                 <div style={{width:48,height:48,borderRadius:"50%",background:m.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26}}>{m.emoji}</div>
                 <div style={{flex:1}}><div style={{fontWeight:800,fontSize:16}}>{m.name}</div><div style={{fontSize:12,color:m.color,fontWeight:700}}>⭐ {starMap[m.id]||0} stars earned</div></div>
                 <div style={{width:18,height:18,borderRadius:"50%",background:m.color}}/><span style={{fontSize:18,color:"#DDD"}}>›</span>
               </div>
             ))}
 
-            {/* ── Parental Lock Card ── */}
+            {/* Parental Lock */}
             <div style={{background:locked?"#FEF2F2":"#F0FDF4",borderRadius:16,padding:16,marginBottom:12}}>
-              <div style={{fontWeight:800,fontSize:15,color:locked?"#EF4444":"#2D6A4F",marginBottom:10}}>
-                {locked?"🔒 App is Locked":"🔓 Parental Lock"}
-              </div>
+              <div style={{fontWeight:800,fontSize:15,color:locked?"#EF4444":"#2D6A4F",marginBottom:10}}>{locked?"🔒 App is Locked":"🔓 Parental Lock"}</div>
               {!parentPin?(
                 <div>
                   <div style={{fontSize:13,color:"#666",fontWeight:600,marginBottom:10}}>Set a 4-digit PIN to lock the app for kids. They can view but not edit anything.</div>
@@ -955,41 +893,35 @@ export default function FamilyHub(){
               )}
             </div>
 
-            {/* ── Sleep Mode Card ── */}
+            {/* Sleep Mode */}
             <div style={{background:"#F5F3FF",borderRadius:16,padding:16,marginBottom:12}}>
               <div style={{fontWeight:800,fontSize:15,color:"#5B21B6",marginBottom:4}}>😴 Sleep Mode</div>
               <div style={{fontSize:12,color:"#7C3AED",fontWeight:600,marginBottom:12}}>Screen goes dark between these hours</div>
               <div style={{display:"flex",gap:12,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
-                <div>
-                  <label style={{fontSize:11,fontWeight:800,color:"#7C3AED",display:"block",marginBottom:4}}>SLEEP AT</label>
-                  <input type="time" value={sleepStartInput} onChange={e=>setSleepStartInput(e.target.value)} style={{padding:"8px 12px",borderRadius:10,border:"2px solid #DDD6FE",fontSize:14,fontWeight:700,outline:"none",background:"white",color:"#5B21B6"}}/>
-                </div>
+                <div><label style={{fontSize:11,fontWeight:800,color:"#7C3AED",display:"block",marginBottom:4}}>SLEEP AT</label><input type="time" value={sleepStartInput} onChange={e=>setSleepStartInput(e.target.value)} style={{padding:"8px 12px",borderRadius:10,border:"2px solid #DDD6FE",fontSize:14,fontWeight:700,outline:"none",background:"white",color:"#5B21B6"}}/></div>
                 <div style={{fontSize:20,color:"#A78BFA",paddingTop:18}}>→</div>
-                <div>
-                  <label style={{fontSize:11,fontWeight:800,color:"#7C3AED",display:"block",marginBottom:4}}>WAKE AT</label>
-                  <input type="time" value={sleepEndInput} onChange={e=>setSleepEndInput(e.target.value)} style={{padding:"8px 12px",borderRadius:10,border:"2px solid #DDD6FE",fontSize:14,fontWeight:700,outline:"none",background:"white",color:"#5B21B6"}}/>
-                </div>
+                <div><label style={{fontSize:11,fontWeight:800,color:"#7C3AED",display:"block",marginBottom:4}}>WAKE AT</label><input type="time" value={sleepEndInput} onChange={e=>setSleepEndInput(e.target.value)} style={{padding:"8px 12px",borderRadius:10,border:"2px solid #DDD6FE",fontSize:14,fontWeight:700,outline:"none",background:"white",color:"#5B21B6"}}/></div>
               </div>
               <div style={{display:"flex",gap:8}}>
                 <button onClick={saveSleepSettings} style={{...S.save,flex:"none",padding:"9px 18px",background:"#7C3AED"}}>Save</button>
-                <button onClick={()=>setSleepMode(true)} style={{...S.cancel,flex:"none",padding:"9px 18px",fontSize:12}}>Preview Sleep Screen</button>
+                <button onClick={()=>setSleepMode(true)} style={{...S.cancel,flex:"none",padding:"9px 18px",fontSize:12}}>Preview</button>
               </div>
-              <div style={{fontSize:11,color:"#A78BFA",fontWeight:600,marginTop:8}}>Currently: {sleepStart} – {sleepEnd} · Parents can bypass with PIN</div>
+              <div style={{fontSize:11,color:"#A78BFA",fontWeight:600,marginTop:8}}>Currently: {sleepStart} – {sleepEnd} · Parents bypass with PIN</div>
             </div>
 
-            {/* ── Notifications Card ── */}
+            {/* Notifications */}
             <div style={{background:notifStatus==="granted"?"#ECFDF5":notifStatus==="denied"?"#FEF2F2":"#FFF3CD",borderRadius:16,padding:16,marginBottom:12}}>
               <div style={{fontWeight:800,fontSize:15,color:notifStatus==="granted"?"#2D6A4F":notifStatus==="denied"?"#EF4444":"#856404",marginBottom:notifStatus==="granted"?10:0}}>
-                {notifStatus==="granted"?"🔔 Notifications On":notifStatus==="denied"?"🔕 Notifications Blocked":"🔔 Notifications Off"}
+                {notifStatus==="granted"?"🔔 Notifications On":notifStatus==="denied"?"🔕 Blocked":"🔔 Notifications Off"}
               </div>
               {notifStatus==="unknown"&&<button onClick={enableNotifications} style={{...S.save,flex:"none",padding:"8px 16px",marginTop:8}}>Enable</button>}
-              {notifStatus==="denied"&&<div style={{fontSize:12,color:"#EF4444",fontWeight:600,marginTop:6}}>Enable in browser/phone Settings → Notifications</div>}
+              {notifStatus==="denied"&&<div style={{fontSize:12,color:"#EF4444",fontWeight:600,marginTop:6}}>Enable in Settings → Notifications</div>}
               {notifStatus==="granted"&&(
                 <div>
                   <label style={{fontSize:11,fontWeight:800,color:"#2D6A4F",display:"block",marginBottom:6}}>📋 DAILY CHORE REMINDER</label>
                   <div style={{display:"flex",gap:8,alignItems:"center"}}>
                     <input type="time" value={choreTimeInput} onChange={e=>setChoreTimeInput(e.target.value)} style={{padding:"8px 12px",borderRadius:10,border:"2px solid #D1FAE5",fontSize:14,fontWeight:700,outline:"none",background:"white",color:"#2D6A4F"}}/>
-                    <button onClick={()=>{setChoreTime(choreTimeInput);flash("Chore reminder set!");}} style={{...S.save,flex:"none",padding:"8px 16px",background:"#2D6A4F"}}>Save</button>
+                    <button onClick={()=>{setChoreTime(choreTimeInput);flash("Reminder set!");}} style={{...S.save,flex:"none",padding:"8px 16px",background:"#2D6A4F"}}>Save</button>
                   </div>
                   <button onClick={()=>sendNotif("📋 Test","This is your chore reminder preview!")} style={{marginTop:10,background:"none",border:"2px solid #2D6A4F",borderRadius:10,padding:"6px 14px",fontSize:12,fontWeight:800,cursor:"pointer",color:"#2D6A4F",fontFamily:"'Nunito',sans-serif"}}>Send Test</button>
                 </div>
@@ -1005,7 +937,6 @@ export default function FamilyHub(){
 
       {/* ══ MODALS ══ */}
 
-      {/* Day modal */}
       {showDayModal&&selectedDate&&(
         <div className="mbg" onClick={()=>setShowDayModal(false)}>
           <div className="mod fi" onClick={e=>e.stopPropagation()}>
@@ -1041,7 +972,6 @@ export default function FamilyHub(){
         </div>
       )}
 
-      {/* Event form */}
       {showEventForm&&editingEvent&&(
         <div className="mbg" onClick={()=>{setShowEventForm(false);setEditingEvent(null);}}>
           <div className="mod fi" onClick={e=>e.stopPropagation()}>
@@ -1050,7 +980,6 @@ export default function FamilyHub(){
         </div>
       )}
 
-      {/* Month planner */}
       {showMonthPlanner&&(
         <div className="mbg" onClick={()=>setShowMonthPlanner(false)}>
           <div className="mod fi" onClick={e=>e.stopPropagation()}>
@@ -1065,7 +994,6 @@ export default function FamilyHub(){
         </div>
       )}
 
-      {/* Add task */}
       {showTaskModal&&(
         <div className="mbg" onClick={()=>setShowTaskModal(false)}>
           <div className="mod fi" onClick={e=>e.stopPropagation()}>
@@ -1089,7 +1017,6 @@ export default function FamilyHub(){
         </div>
       )}
 
-      {/* Meal modal */}
       {showMealModal&&(
         <div className="mbg" onClick={()=>setShowMealModal(false)}>
           <div className="mod fi" onClick={e=>e.stopPropagation()}>
@@ -1104,7 +1031,6 @@ export default function FamilyHub(){
         </div>
       )}
 
-      {/* Edit member */}
       {editingMember&&(
         <div className="mbg" onClick={()=>setEditingMember(null)}>
           <div className="mod fi" onClick={e=>e.stopPropagation()}>
